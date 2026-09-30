@@ -1,0 +1,12 @@
+.gradle/
+.idea/
+.kotlin/
+.tools/
+**/build/
+local.properties
+backend/data/
+backend/__pycache__/
+*.log
+*.zip
+*.apk
+*.aab
