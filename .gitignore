@@ -11,13 +11,10 @@ backend/__pycache__/
 *.apk
 *.aab
 
-# Scratch / preview / non-app files
+# Scratch / preview / redundant files
 preview.html
-*.txt
+b64_individu.txt
+b64_kelompok.txt
+cal_b64.txt
 DEBUG_AUDIT.md
 resdrawable/
-export-backend-zip.ps1
-start-online.bat
-start-online.ps1
-build-local.ps1
-Procfile
