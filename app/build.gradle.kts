@@ -1,4 +1,4 @@
-﻿plugins {
+plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
@@ -14,7 +14,9 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "1.0"
-        buildConfigField("String", "API_BASE_URL", "\"${providers.gradleProperty("studioApiUrl").getOrElse("http://127.0.0.1:8765")}\"")
+        buildConfigField("String", "SUPABASE_URL", "\"https://ppdsgwcdbdhplokzzkxu.supabase.co\"")
+        buildConfigField("String", "SUPABASE_KEY", "\"sb_publishable_VWQYA3ijvPGTv2HOnpWUbA_vbOQdWbi\"")
+        buildConfigField("String", "API_BASE_URL", "\"${providers.gradleProperty("studioApiUrl").getOrElse("https://ppdsgwcdbdhplokzzkxu.supabase.co")}\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

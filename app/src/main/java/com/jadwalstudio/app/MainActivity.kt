@@ -24,6 +24,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModelProvider
 import com.jadwalstudio.app.data.*
 import com.jadwalstudio.app.ui.screens.*
+import com.jadwalstudio.app.ui.components.AppUpdateDialog
 import com.jadwalstudio.app.ui.components.HeaderUser
 import com.jadwalstudio.app.ui.components.LocalHeaderUser
 import com.jadwalstudio.app.ui.theme.JadwalStudioTheme
@@ -79,8 +80,8 @@ fun AppNavigation(repository: StudioRepository, pendingInvite: String = "", onIn
     var inviteLink by rememberSaveable { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
-    var showServer by remember { mutableStateOf(false) }
-    var serverValue by remember { mutableStateOf(repository.baseUrl) }
+    var availableUpdate by remember { mutableStateOf<AppUpdate?>(null) }
+    var checkedUpdateOnStart by rememberSaveable { mutableStateOf(false) }
 
     fun work(action: suspend () -> Unit) {
         if (busy) return
@@ -172,6 +173,16 @@ fun AppNavigation(repository: StudioRepository, pendingInvite: String = "", onIn
         if (pendingInvite.isNotBlank() && repository.signedIn && screen != Screen.SPLASH) screen = Screen.GROUPS
     }
 
+    LaunchedEffect(Unit) {
+        if (!checkedUpdateOnStart) {
+            checkedUpdateOnStart = true
+            val update = repository.checkForUpdate()
+            if (update != null) {
+                availableUpdate = update
+            }
+        }
+    }
+
     LaunchedEffect(repository.signedIn) {
         if (repository.signedIn) {
             try { repository.refresh() }
@@ -184,9 +195,23 @@ fun AppNavigation(repository: StudioRepository, pendingInvite: String = "", onIn
     }
     BackHandler(enabled = screen !in listOf(Screen.HOME, Screen.SPLASH, Screen.ONBOARDING, Screen.LOGIN) && !busy) { back() }
 
-    CompositionLocalProvider(LocalHeaderUser provides HeaderUser(user.optString("name", ""), user.optString("email", ""),
-        onRefresh = { work { repository.refresh() } }, photo = user.optString("photo"),
-        onPhotoSelected = { uri -> work { repository.updatePhoto(uri); refreshAfterSave() } })) {
+    CompositionLocalProvider(LocalHeaderUser provides HeaderUser(
+        name = user.optString("name", ""),
+        email = user.optString("email", ""),
+        onRefresh = { work { repository.refresh() } },
+        photo = user.optString("photo"),
+        onPhotoSelected = { uri -> work { repository.updatePhoto(uri); refreshAfterSave() } },
+        onCheckUpdate = {
+            work {
+                val update = repository.checkForUpdate()
+                if (update != null) {
+                    availableUpdate = update
+                } else {
+                    message = "Aplikasi Anda sudah versi terbaru (v${BuildConfig.VERSION_NAME})."
+                }
+            }
+        }
+    )) {
         Column(Modifier.fillMaxSize()) {
             Box(Modifier.weight(1f)) {
                 if (subjects.isEmpty() && screen in listOf(Screen.ADD_TASK_INDIVIDUAL, Screen.ADD_TASK_GROUP, Screen.ADD_SCHEDULE)) {
@@ -197,13 +222,10 @@ fun AppNavigation(repository: StudioRepository, pendingInvite: String = "", onIn
                 } else when (screen) {
                     Screen.SPLASH -> SplashScreen { screen = if (repository.signedIn) { if (pendingInvite.isNotBlank()) Screen.GROUPS else Screen.HOME } else Screen.ONBOARDING }
                     Screen.ONBOARDING -> OnboardingScreen { screen = Screen.LOGIN }
-                    Screen.LOGIN -> Column {
-                        if (BuildConfig.DEBUG) TextButton(onClick = { serverValue = repository.baseUrl; showServer = true }) { Text("Koneksi server lokal") }
-                        LoginScreen(
-                            onLoginSuccess = { email, password, remember -> work { require(android.util.Patterns.EMAIL_ADDRESS.matcher(email).matches()) { "Format email tidak valid." }; require(password.length >= 8) { "Password minimal 8 karakter." }; repository.login(email, password, remember); screen = Screen.HOME } },
-                            onNavigateToRegister = { screen = Screen.REGISTER },
-                            onNavigateToForgotPassword = { message = "Reset password otomatis belum tersedia pada MVP. Hubungi pengelola server untuk bantuan akun." })
-                    }
+                    Screen.LOGIN -> LoginScreen(
+                        onLoginSuccess = { email, password, remember -> work { require(android.util.Patterns.EMAIL_ADDRESS.matcher(email).matches()) { "Format email tidak valid." }; require(password.length >= 8) { "Password minimal 8 karakter." }; repository.login(email, password, remember); screen = Screen.HOME } },
+                        onNavigateToRegister = { screen = Screen.REGISTER },
+                        onNavigateToForgotPassword = { message = "Reset password otomatis belum tersedia pada MVP. Hubungi pengelola server untuk bantuan akun." })
                     Screen.REGISTER -> RegisterScreen(
                         onRegisterSuccess = { name, email, password, confirmation -> work {
                             require(name.isNotBlank()) { "Nama wajib diisi." }
@@ -316,11 +338,7 @@ fun AppNavigation(repository: StudioRepository, pendingInvite: String = "", onIn
             }
         }
     }
-    if (showServer) AlertDialog(onDismissRequest = { showServer = false }, title = { Text("Server lokal") },
-        text = { OutlinedTextField(serverValue, { serverValue = it }, label = { Text("Alamat API") }, supportingText = { Text("USB: http://127.0.0.1:8765 · Emulator: http://10.0.2.2:8765") }) },
-        confirmButton = { TextButton(onClick = {
-            try { repository.setServer(serverValue); showServer = false } catch (error: Exception) { message = error.message }
-        }) { Text("Simpan") } }, dismissButton = { TextButton(onClick = { showServer = false }) { Text("Batal") } })
+
     if (message != null) AlertDialog(onDismissRequest = { message = null }, title = { Text("JadwalStudio") },
         text = { Text(message!!) }, confirmButton = { TextButton(onClick = { message = null }) { Text("Mengerti") } })
     if (busy) Dialog(onDismissRequest = {}, properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false)) {
@@ -329,5 +347,40 @@ fun AppNavigation(repository: StudioRepository, pendingInvite: String = "", onIn
                 CircularProgressIndicator(Modifier.size(28.dp)); Text("Memproses…")
             }
         }
+    }
+
+    if (availableUpdate != null) {
+        val update = availableUpdate!!
+        AppUpdateDialog(
+            update = update,
+            onDismiss = { if (!update.isMandatory) availableUpdate = null },
+            onUpdate = {
+                if (update.apkUrl.isNotBlank()) {
+                    try {
+                        val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(update.apkUrl)).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        context.startActivity(intent)
+                    } catch (_: Exception) {
+                        try {
+                            val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as? android.app.DownloadManager
+                            val request = android.app.DownloadManager.Request(android.net.Uri.parse(update.apkUrl)).apply {
+                                setTitle("Pembaruan JadwalStudio v${update.versionName}")
+                                setDescription("Mengunduh file pembaruan...")
+                                setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                                setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_DOWNLOADS, "JadwalStudio-${update.versionName}.apk")
+                                setMimeType("application/vnd.android.package-archive")
+                            }
+                            dm?.enqueue(request)
+                            message = "Mengunduh pembaruan. Silakan periksa notifikasi."
+                        } catch (err: Exception) {
+                            message = "Gagal memulai unduhan: ${err.message}"
+                        }
+                    }
+                } else {
+                    message = "Tautan file pembaruan belum tersedia."
+                }
+            }
+        )
     }
 }

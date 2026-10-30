@@ -54,7 +54,7 @@ import androidx.compose.ui.window.DialogProperties
 import com.jadwalstudio.app.R
 
 data class HeaderUser(val name: String = "", val email: String = "", val onRefresh: () -> Unit = {},
-    val photo: String = "", val onPhotoSelected: (android.net.Uri) -> Unit = {})
+    val photo: String = "", val onPhotoSelected: (android.net.Uri) -> Unit = {}, val onCheckUpdate: () -> Unit = {})
 val LocalHeaderUser = androidx.compose.runtime.staticCompositionLocalOf { HeaderUser() }
 
 val AppHeaderGreen = Color(0xFF4F7366)
@@ -215,6 +215,7 @@ fun AppHeader(
                     Spacer(modifier = Modifier.height(24.dp))
 
                     val refreshData = LocalHeaderUser.current.onRefresh
+                    val checkUpdate = LocalHeaderUser.current.onCheckUpdate
                     Button(
                         onClick = {
                             showProfileDialog = false
@@ -224,7 +225,27 @@ fun AppHeader(
                         shape = RoundedCornerShape(14.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = AppHeaderGreen)
                     ) {
-                        Text("Muat Ulang", color = Color.White)
+                        Text("Muat Ulang Data", color = Color.White)
+                    }
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Button(
+                        onClick = {
+                            showProfileDialog = false
+                            checkUpdate()
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(44.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE8F1EE))
+                    ) {
+                        Text(
+                            text = "Periksa Pembaruan Aplikasi",
+                            color = Color(0xFF2E4841),
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
                     }
                     Spacer(modifier = Modifier.height(10.dp))
 

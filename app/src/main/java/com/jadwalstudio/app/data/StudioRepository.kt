@@ -42,6 +42,14 @@ fun json(vararg values: Pair<String, Any?>) = JSONObject().apply {
 
 class ApiException(message: String, val code: Int = 0) : Exception(message)
 
+data class AppUpdate(
+    val versionCode: Int,
+    val versionName: String,
+    val apkUrl: String,
+    val changelog: String,
+    val isMandatory: Boolean
+)
+
 /** Server is the source of truth. Encrypted cache is read-only when disconnected. */
 class StudioRepository(private val context: Context) {
     private val sessionLock = Mutex()
@@ -49,7 +57,8 @@ class StudioRepository(private val context: Context) {
     private val preferences = context.getSharedPreferences("studio_session", Context.MODE_PRIVATE)
     private val cache = AtomicFile(File(context.noBackupFilesDir, "studio-cache.enc"))
     private val vault = Vault()
-    var baseUrl: String = preferences.getString("server", BuildConfig.API_BASE_URL)!!.trimEnd('/')
+    var baseUrl: String = preferences.getString("server", BuildConfig.API_BASE_URL)
+        ?.takeIf { it.startsWith("https://") }?.trimEnd('/') ?: BuildConfig.API_BASE_URL.trimEnd('/')
         private set
     private var token: String = runCatching {
         preferences.getString("session", null)?.let { vault.decrypt(it) } ?: ""
@@ -73,6 +82,43 @@ class StudioRepository(private val context: Context) {
         baseUrl = value.trim().trimEnd('/')
         preferences.edit().putString("server", baseUrl).apply()
         cache.delete()
+    }
+
+    suspend fun checkForUpdate(): AppUpdate? = withContext(Dispatchers.IO) {
+        val endpoint = "${BuildConfig.SUPABASE_URL}/rest/v1/app_versions?select=*&order=version_code.desc&limit=1"
+        val connection = URL(endpoint).openConnection() as HttpURLConnection
+        try {
+            connection.requestMethod = "GET"
+            connection.connectTimeout = 8000
+            connection.readTimeout = 12000
+            connection.setRequestProperty("Accept", "application/json")
+            connection.setRequestProperty("apikey", BuildConfig.SUPABASE_KEY)
+            if (token.isNotEmpty()) connection.setRequestProperty("Authorization", "Bearer $token")
+
+            val status = connection.responseCode
+            if (status in 200..299) {
+                val text = connection.inputStream.bufferedReader().use { it.readText() }
+                val array = JSONArray(text)
+                if (array.length() > 0) {
+                    val item = array.getJSONObject(0)
+                    val remoteCode = item.optInt("version_code", 0)
+                    if (remoteCode > BuildConfig.VERSION_CODE) {
+                        return@withContext AppUpdate(
+                            versionCode = remoteCode,
+                            versionName = item.optString("version_name", "Terbaru"),
+                            apkUrl = item.optString("apk_url", ""),
+                            changelog = item.optString("changelog", "Pembaruan versi terbaru telah tersedia."),
+                            isMandatory = item.optBoolean("is_mandatory", false)
+                        )
+                    }
+                }
+            }
+            null
+        } catch (_: Exception) {
+            null
+        } finally {
+            connection.disconnect()
+        }
     }
 
     suspend fun register(name: String, email: String, password: String, confirmation: String) {
@@ -152,28 +198,175 @@ class StudioRepository(private val context: Context) {
     }
 
     suspend fun request(method: String, path: String, body: JSONObject? = null): JSONObject = withContext(Dispatchers.IO) {
-        val connection = URL(baseUrl + path).openConnection() as HttpURLConnection
+        val isSupabase = baseUrl.contains("supabase.co")
+        var targetMethod = method
+        var targetPath = path
+        var outBody = body
+
+        if (isSupabase) {
+            when {
+                path == "/auth/login" -> {
+                    targetMethod = "POST"
+                    targetPath = "/auth/v1/token?grant_type=password"
+                }
+                path == "/auth/register" -> {
+                    targetMethod = "POST"
+                    targetPath = "/auth/v1/signup"
+                    if (body != null) {
+                        outBody = json(
+                            "email" to body.optString("email"),
+                            "password" to body.optString("password"),
+                            "data" to json("name" to body.optString("name"))
+                        )
+                    }
+                }
+                path == "/auth/logout" -> {
+                    targetMethod = "POST"
+                    targetPath = "/auth/v1/logout"
+                }
+                path == "/state" -> {
+                    targetMethod = "POST"
+                    targetPath = "/rest/v1/rpc/get_app_state"
+                    outBody = JSONObject()
+                }
+                path == "/subjects" && method == "POST" -> {
+                    targetPath = "/rest/v1/subjects"
+                }
+                path.startsWith("/subjects/") && method == "DELETE" -> {
+                    val id = path.substringAfter("/subjects/")
+                    targetPath = "/rest/v1/subjects?id=eq.$id"
+                }
+                path == "/tasks" && method == "POST" -> {
+                    targetPath = "/rest/v1/tasks"
+                    if (body != null) {
+                        val mapped = JSONObject(body.toString())
+                        if (mapped.has("subjectId")) {
+                            mapped.put("subject_id", mapped.remove("subjectId"))
+                        }
+                        if (mapped.has("groupId")) {
+                            val gid = mapped.remove("groupId")
+                            if (gid != null && gid != JSONObject.NULL && gid.toString().isNotBlank()) {
+                                mapped.put("group_id", gid)
+                            }
+                        }
+                        mapped.remove("attachment")
+                        mapped.remove("assigneeIds")
+                        outBody = mapped
+                    }
+                }
+                path.startsWith("/tasks/") && (method == "PUT" || method == "PATCH") -> {
+                    val id = path.substringAfter("/tasks/")
+                    targetMethod = "PATCH"
+                    targetPath = "/rest/v1/tasks?id=eq.$id"
+                    if (body != null) {
+                        val mapped = JSONObject(body.toString())
+                        if (mapped.has("subjectId")) {
+                            mapped.put("subject_id", mapped.remove("subjectId"))
+                        }
+                        if (mapped.has("groupId")) {
+                            val gid = mapped.remove("groupId")
+                            if (gid != null && gid != JSONObject.NULL && gid.toString().isNotBlank()) {
+                                mapped.put("group_id", gid)
+                            }
+                        }
+                        mapped.remove("attachment")
+                        mapped.remove("assigneeIds")
+                        outBody = mapped
+                    }
+                }
+                path.startsWith("/tasks/") && method == "DELETE" -> {
+                    val id = path.substringAfter("/tasks/")
+                    targetPath = "/rest/v1/tasks?id=eq.$id"
+                }
+                path == "/schedules" && method == "POST" -> {
+                    targetPath = "/rest/v1/schedules"
+                    if (body != null) {
+                        val mapped = JSONObject(body.toString())
+                        if (mapped.has("subjectId")) mapped.put("subject_id", mapped.remove("subjectId"))
+                        if (mapped.has("startTime")) mapped.put("start_time", mapped.remove("startTime"))
+                        if (mapped.has("endTime")) mapped.put("end_time", mapped.remove("endTime"))
+                        outBody = mapped
+                    }
+                }
+                path.startsWith("/schedules/") && (method == "PUT" || method == "PATCH") -> {
+                    val id = path.substringAfter("/schedules/")
+                    targetMethod = "PATCH"
+                    targetPath = "/rest/v1/schedules?id=eq.$id"
+                    if (body != null) {
+                        val mapped = JSONObject(body.toString())
+                        if (mapped.has("subjectId")) mapped.put("subject_id", mapped.remove("subjectId"))
+                        if (mapped.has("startTime")) mapped.put("start_time", mapped.remove("startTime"))
+                        if (mapped.has("endTime")) mapped.put("end_time", mapped.remove("endTime"))
+                        outBody = mapped
+                    }
+                }
+                path.startsWith("/schedules/") && method == "DELETE" -> {
+                    val id = path.substringAfter("/schedules/")
+                    targetPath = "/rest/v1/schedules?id=eq.$id"
+                }
+                path == "/groups" && method == "POST" -> {
+                    targetPath = "/rest/v1/groups"
+                }
+                path == "/groups/join" && method == "POST" -> {
+                    targetPath = "/rest/v1/rpc/join_group_by_code"
+                }
+            }
+        }
+
+        val connection = URL(baseUrl + targetPath).openConnection() as HttpURLConnection
         try {
-            connection.requestMethod = method
-            connection.connectTimeout = 10000
+            connection.requestMethod = targetMethod
+            connection.connectTimeout = 15000
             connection.readTimeout = 30000
             connection.instanceFollowRedirects = false
             connection.setRequestProperty("Accept", "application/json")
+            if (isSupabase) {
+                connection.setRequestProperty("apikey", BuildConfig.SUPABASE_KEY)
+                if (targetMethod == "POST" && !targetPath.contains("/auth/") && !targetPath.contains("/rpc/")) {
+                    connection.setRequestProperty("Prefer", "return=representation")
+                }
+            }
             if (token.isNotEmpty()) connection.setRequestProperty("Authorization", "Bearer $token")
-            if (body != null) {
+            if (outBody != null && (targetMethod == "POST" || targetMethod == "PUT" || targetMethod == "PATCH")) {
                 connection.doOutput = true
                 connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
-                val bytes = body.toString().toByteArray()
+                val bytes = outBody.toString().toByteArray()
                 connection.setFixedLengthStreamingMode(bytes.size)
                 connection.outputStream.use { it.write(bytes) }
             }
             val status = connection.responseCode
             val stream = if (status in 200..299) connection.inputStream else connection.errorStream
-            val result = stream?.bufferedReader()?.use { JSONObject(it.readText()) } ?: JSONObject()
-            if (status !in 200..299) throw ApiException(result.optString("error", "Permintaan gagal ($status)."), status)
-            result
+            val rawText = stream?.bufferedReader()?.use { it.readText() } ?: ""
+            val parsedResult = when {
+                rawText.isBlank() -> JSONObject()
+                rawText.trim().startsWith("[") -> {
+                    val array = JSONArray(rawText)
+                    if (array.length() > 0 && array.get(0) is JSONObject) array.getJSONObject(0)
+                    else json("items" to array)
+                }
+                rawText.trim().startsWith("{") -> JSONObject(rawText)
+                else -> json("message" to rawText)
+            }
+            if (status !in 200..299) {
+                val errorMsg = parsedResult.optString("msg", parsedResult.optString("message", parsedResult.optString("error", "Permintaan gagal ($status).")))
+                throw ApiException(errorMsg, status)
+            }
+            if (isSupabase && path == "/auth/login") {
+                val accessToken = parsedResult.optString("access_token", "")
+                val userObj = parsedResult.optJSONObject("user")
+                val userMapped = if (userObj != null) {
+                    val meta = userObj.optJSONObject("user_metadata")
+                    json(
+                        "id" to userObj.optString("id"),
+                        "email" to userObj.optString("email"),
+                        "name" to (meta?.optString("name") ?: userObj.optString("email").substringBefore('@'))
+                    )
+                } else JSONObject()
+                return@withContext json("token" to accessToken, "user" to userMapped)
+            }
+            parsedResult
         } catch (error: ApiException) { throw error }
-        catch (error: Exception) { throw ApiException("Tidak dapat menghubungi server. Periksa koneksi dan alamat server, lalu coba lagi.") }
+        catch (error: Exception) { throw ApiException(error.message ?: "Tidak dapat menghubungi server. Periksa koneksi dan alamat server, lalu coba lagi.") }
         finally { connection.disconnect() }
     }
 

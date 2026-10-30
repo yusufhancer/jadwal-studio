@@ -1,20 +1,32 @@
+# Gradle & Build
 .gradle/
-.idea/
-.kotlin/
-.tools/
+build/
 **/build/
+
+# Android Studio & IDE
+.idea/
+*.iml
+.tools/
+.kotlin/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Local configuration & secrets
 local.properties
-backend/data/
-backend/__pycache__/
-*.log
-*.zip
+*.key
+*.keystore
+*.jks
+
+# Package & Archive artifacts
 *.apk
 *.aab
+*.zip
+*.tar.gz
 
-# Scratch / preview / redundant files
-preview.html
-b64_individu.txt
-b64_kelompok.txt
-cal_b64.txt
-DEBUG_AUDIT.md
-resdrawable/
+# Logs & Temporary files
+*.log
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db
